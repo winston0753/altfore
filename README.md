@@ -1,6 +1,17 @@
 # AltFore: Stock Forecasting using Alternative Inputs
 
-## Reddit RSS Mentions Dataset
+## Dataset
+
+`dataset/` contains generated Reddit ticker-mention data:
+
+- `reddit_mentions.csv`: mention-level records (one row per post-ticker pair)
+- `reddit_mentions_daily.csv`: daily aggregates by date, subreddit, and ticker
+
+## Scripts
+
+- `scripts/build_reddit_mentions.py`: pulls RSS posts from selected subreddits, extracts ticker mentions, and writes both dataset files
+
+## Build Reddit Mentions
 
 Install dependencies:
 
