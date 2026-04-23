@@ -1,2 +1,6 @@
 feedparser
 pandas
+yfinance==0.2.58
+curl_cffi==0.7.4
+numpy
+matplotlib
