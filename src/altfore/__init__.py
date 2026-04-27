@@ -1,0 +1,1 @@
+"""AltFore source package."""
