@@ -1,38 +1,68 @@
 # AltFore: Stock Forecasting using Alternative Inputs
 
-AltFore builds a **daily panel** of **Yahoo prices** (~1 year) plus **Reddit mention totals** (from subreddit RSS) for modeling.
+AltFore builds a daily modeling panel from:
 
-## Dataset
+- Reddit ticker mentions (RSS from selected subreddits)
+- Yahoo Finance daily prices (roughly one calendar year)
 
-`dataset/` holds generated tables and optional figures:
+The current pipeline is intentionally lightweight and script-driven.
 
-- `reddit_mentions.csv` — one row per post–ticker pair (mentions + metadata)
-- `reddit_mentions_daily.csv` — daily counts by date, subreddit, ticker
-- `prices_daily.csv` — OHLCV after cleaning
-- `model_dataset.csv` — prices + returns + Reddit features for modeling
+## Current Architecture
 
-## Scripts
+The repo now uses a thin-wrapper pattern:
+
+- `scripts/` = stable CLI entrypoints
+- `src/altfore/` = reusable implementation modules
+
+### Source modules
+
+- `src/altfore/ingest/reddit_mentions.py`
+  - Fetches subreddit RSS feeds
+  - Extracts ticker tokens with regex + stoplist
+  - Writes mention-level and daily aggregate CSVs
+- `src/altfore/pipeline/model_dataset.py`
+  - Loads Reddit daily data
+  - Normalizes Reddit schema and aggregates by ticker (current static-ticker mode)
+  - Selects tickers and downloads/cache-reuses Yahoo prices
+  - Builds returns/labels and merges Reddit features onto prices
+  - Validates and writes output datasets
+- `src/altfore/visualization/returns_vs_mentions.py`
+  - Plots one-year return vs Reddit total mentions by ticker
+- `src/altfore/visualization/ticker_prices.py`
+  - Plots OHLC range + close and optional volume for one ticker
+
+## Scripts (CLI Entrypoints)
 
 | Script | Role |
 |--------|------|
-| `scripts/build_reddit_mentions.py` | Fetch RSS, parse tickers from title/summary, write mention + daily CSVs |
-| `scripts/build_model_dataset.py` | Build prices + merged model table (see pipeline below) |
-| `scripts/plot_ticker_prices.py` | Plot OHLC/volume for one symbol from `prices_daily.csv` (`--ticker`, `--output`) |
+| `scripts/build_reddit_mentions.py` | Build `reddit_mentions.csv` and `reddit_mentions_daily.csv` |
+| `scripts/build_model_dataset.py` | Build `prices_daily.csv` and `model_dataset.csv` |
+| `scripts/plot_returns_vs_mentions.py` | Save ticker return vs mention chart PNG |
+| `scripts/plot_ticker_prices.py` | Plot one ticker from `prices_daily.csv` |
 
-### `build_model_dataset.py` — main functions (in order)
+## Dataset Outputs
 
-- **`load_reddit_daily`** — read `reddit_mentions_daily.csv`
-- **`normalize_reddit_schema`** — validate columns, sum counts per **ticker** (no date on Reddit side for the merge)
-- **`get_unique_tickers`** — filter symbols and cap how many tickers get Yahoo pulls
-- **`load_price_cache` / `select_tickers_needing_download`** — reuse `prices_daily.csv` when it already covers the window
-- **`download_price_data`** — batched Yahoo download with retries/backoff
-- **`drop_incomplete_price_rows`** — drop rows with any null OHLCV
-- **`build_price_features`** — `return_1d`, forward returns, `direction_fwd_1d`
-- **`merge_datasets`** — left-join Reddit totals on **ticker**
-- **`build_reddit_features`** — lag / MA / abnormal columns (static-ticker mode)
-- **`validate_final_dataset` / `save_outputs` / `print_diagnostics`** — checks, CSV writes, log summary
+`dataset/` contains generated tables and optional figures:
 
-## Quick start
+- `reddit_mentions.csv` — one row per post-ticker pair (with post metadata)
+- `reddit_mentions_daily.csv` — daily mention counts by `date`, `subreddit`, `ticker`
+- `prices_daily.csv` — cleaned daily OHLCV by `date`, `ticker`
+- `model_dataset.csv` — prices + return targets + Reddit features
+
+## Current Modeling Spec
+
+`build_model_dataset.py` currently uses a static Reddit merge mode:
+
+- Reddit rows are normalized and aggregated to one row per ticker
+- Price rows are daily by `date,ticker`
+- Merge is left join on `ticker` only
+- Derived Reddit lag/rolling-style columns are constant per ticker in this mode
+
+This is a known interim state before moving to fully time-aware `date,ticker` Reddit features.
+
+## Quick Start
+
+Use Python 3.11.
 
 ```bash
 pip install -r requirements.txt
@@ -40,10 +70,14 @@ python scripts/build_reddit_mentions.py
 python scripts/build_model_dataset.py
 ```
 
-Optional plot (saves PNG; use `--output` because the script uses a non-GUI backend):
+### Plot examples
 
 ```bash
+python scripts/plot_returns_vs_mentions.py --output dataset/returns_vs_mentions.png
 python scripts/plot_ticker_prices.py --ticker ORCL --output dataset/orcl_prices.png
 ```
 
-Use **Python 3.11** with the pinned `yfinance` / `curl_cffi` versions in `requirements.txt` if you hit import issues on older Pythons.
+## Notes
+
+- Matplotlib scripts use a non-GUI backend and default cache directory at `.matplotlib_cache`.
+- `yfinance` and `curl_cffi` are pinned in `requirements.txt` for compatibility.
