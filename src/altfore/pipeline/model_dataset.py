@@ -86,7 +86,7 @@ def load_reddit_daily(path: Path) -> pd.DataFrame:
 
 
 def normalize_reddit_schema(reddit_df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize Reddit schema and aggregate to one row per ticker (date dropped)."""
+    """Normalize Reddit schema and aggregate to one row per (date, ticker)."""
     missing_required = REDDIT_REQUIRED_COLUMNS - set(reddit_df.columns)
     if missing_required:
         missing_fmt = ", ".join(sorted(missing_required))
@@ -136,9 +136,9 @@ def normalize_reddit_schema(reddit_df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("Reddit data has no usable feature columns after normalization")
 
     grouped = (
-        df.groupby("ticker", as_index=False)
+        df.groupby(["date", "ticker"], as_index=False)
         .agg(aggregations)
-        .sort_values("ticker")
+        .sort_values(["date", "ticker"])
         .reset_index(drop=True)
     )
     return grouped
@@ -389,9 +389,11 @@ def build_price_features(prices_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def merge_datasets(prices_df: pd.DataFrame, reddit_by_ticker: pd.DataFrame) -> pd.DataFrame:
-    """Left join per-ticker Reddit aggregates onto price series."""
-    merged = prices_df.merge(reddit_by_ticker, on="ticker", how="left", suffixes=("", "_reddit"))
+def merge_datasets(prices_df: pd.DataFrame, reddit_by_date_ticker: pd.DataFrame) -> pd.DataFrame:
+    """Left join daily (date, ticker) Reddit aggregates onto price series."""
+    merged = prices_df.merge(
+        reddit_by_date_ticker, on=["date", "ticker"], how="left", suffixes=("", "_reddit")
+    )
     for col in COUNT_LIKE_COLUMNS:
         if col in merged.columns:
             merged[col] = merged[col].fillna(0)
@@ -399,15 +401,21 @@ def merge_datasets(prices_df: pd.DataFrame, reddit_by_ticker: pd.DataFrame) -> p
 
 
 def build_reddit_features(model_df: pd.DataFrame) -> pd.DataFrame:
-    """Set derived Reddit columns in static-ticker mode."""
+    """Compute time-aware Reddit rolling features per ticker."""
     if "reddit_total_mentions" not in model_df.columns:
         model_df["reddit_total_mentions"] = 0
     df = model_df.sort_values(["ticker", "date"]).copy()
-    m = df["reddit_total_mentions"]
-    df["reddit_mentions_1d_lag"] = 0.0
-    df["reddit_mentions_3d_ma"] = m
-    df["reddit_mentions_7d_ma"] = m
-    df["reddit_abnormal_mentions"] = np.where(m > 0, 1.0, 0.0)
+    grp = df.groupby("ticker")["reddit_total_mentions"]
+    df["reddit_mentions_1d_lag"] = grp.shift(1).fillna(0.0)
+    df["reddit_mentions_3d_ma"] = grp.transform(lambda s: s.rolling(3, min_periods=1).mean())
+    df["reddit_mentions_7d_ma"] = grp.transform(lambda s: s.rolling(7, min_periods=1).mean())
+    rolling_mean = grp.transform(lambda s: s.rolling(30, min_periods=5).mean())
+    rolling_std = grp.transform(lambda s: s.rolling(30, min_periods=5).std())
+    df["reddit_abnormal_mentions"] = np.where(
+        rolling_std > 0,
+        (df["reddit_total_mentions"] - rolling_mean) / rolling_std,
+        0.0,
+    )
     return df
 
 
@@ -466,9 +474,7 @@ def print_diagnostics(
     LOGGER.info("Rows in normalized Reddit table: %d", len(reddit_df))
     LOGGER.info("Rows in price table: %d", len(prices_df))
     LOGGER.info("Rows in final model dataset: %d", len(model_df))
-    LOGGER.info(
-        "Reddit is aggregated per ticker only (no date dimension); same totals repeat on each price row"
-    )
+    LOGGER.info("Reddit is aggregated per (date, ticker); rolling features are time-aware")
     if not model_df.empty:
         null_sent = {
             c: int(model_df[c].isna().sum())

@@ -51,14 +51,15 @@ The repo now uses a thin-wrapper pattern:
 
 ## Current Modeling Spec
 
-`build_model_dataset.py` currently uses a static Reddit merge mode:
+`build_model_dataset.py` uses time-aware Reddit features:
 
-- Reddit rows are normalized and aggregated to one row per ticker
+- Reddit rows are normalized and aggregated to one row per `(date, ticker)`
 - Price rows are daily by `date,ticker`
-- Merge is left join on `ticker` only
-- Derived Reddit lag/rolling-style columns are constant per ticker in this mode
-
-This is a known interim state before moving to fully time-aware `date,ticker` Reddit features.
+- Merge is left join on `(date, ticker)`; price days with no Reddit activity get count columns filled with 0
+- Derived Reddit columns are computed as per-ticker rolling stats over calendar time:
+  - `reddit_mentions_1d_lag` — prior day's mentions
+  - `reddit_mentions_3d_ma` / `reddit_mentions_7d_ma` — rolling means
+  - `reddit_abnormal_mentions` — z-score vs 30-day rolling baseline (min 5 obs)
 
 ## Quick Start
 
