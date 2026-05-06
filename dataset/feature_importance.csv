@@ -1,0 +1,11 @@
+feature,importance
+return_1d,21
+momentum_20d,10
+volatility_20d,9
+momentum_5d,7
+mentions_log,5
+mentions_log_chg_5d,5
+mentions_abnormal,5
+mentions_vol_scaled,4
+volume_ratio,3
+mentions_volume_scaled,1

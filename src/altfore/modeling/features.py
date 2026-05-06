@@ -11,9 +11,12 @@ FEATURE_COLS = [
     "momentum_20d",
     "volatility_20d",
     "volume_ratio",
-    "mentions_1d_lag",
-    "mentions_7d_ma",
+    # mention features (within-ticker normalized)
+    "mentions_log",
+    "mentions_log_chg_5d",
     "mentions_abnormal",
+    "mentions_vol_scaled",
+    "mentions_volume_scaled",
 ]
 
 TARGET_COL = "direction_fwd_1d"
@@ -42,21 +45,49 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     vol_ma20 = grp_vol.transform(lambda s: s.rolling(20, min_periods=10).mean())
     out["volume_ratio"] = out["volume"] / vol_ma20
 
-    # mention features — shift(1) so we only use yesterday's data
+    # --- mention features (all shift(1) to avoid lookahead) ---
+
+    # 1. log1p of yesterday's raw mention count
     men_lag1 = grp_men.transform(lambda s: s.shift(1))
-    out["mentions_1d_lag"] = men_lag1
-    out["mentions_7d_ma"] = grp_men.transform(
-        lambda s: s.shift(1).rolling(7, min_periods=1).mean()
+    out["mentions_log"] = np.log1p(men_lag1)
+
+    # 2. pct change of 7-day smoothed log-mentions vs 5 trading days ago
+    log_men = grp_men.transform(lambda s: np.log1p(s.shift(1)))
+    smooth7 = log_men.groupby(out["ticker"]).transform(
+        lambda s: s.rolling(7, min_periods=1).mean()
     )
-    rolling_mean = grp_men.transform(
-        lambda s: s.shift(1).rolling(30, min_periods=5).mean()
+    smooth7_lag5 = smooth7.groupby(out["ticker"]).transform(lambda s: s.shift(5))
+    out["mentions_log_chg_5d"] = np.where(
+        smooth7_lag5 > 0,
+        smooth7 / smooth7_lag5 - 1,
+        0.0,
     )
-    rolling_std = grp_men.transform(
-        lambda s: s.shift(1).rolling(30, min_periods=5).std()
+
+    # 3. z-score vs 30-day rolling mean/std of log-mentions (abnormal attention)
+    rolling_mean = log_men.groupby(out["ticker"]).transform(
+        lambda s: s.rolling(30, min_periods=5).mean()
+    )
+    rolling_std = log_men.groupby(out["ticker"]).transform(
+        lambda s: s.rolling(30, min_periods=5).std()
     )
     out["mentions_abnormal"] = np.where(
         rolling_std > 0,
-        (men_lag1 - rolling_mean) / rolling_std,
+        (out["mentions_log"] - rolling_mean) / rolling_std,
+        0.0,
+    )
+
+    # 4. mention spike scaled by realized volatility (attention per unit vol)
+    #    uses the same z-score numerator divided by 20-day return std
+    out["mentions_vol_scaled"] = np.where(
+        out["volatility_20d"] > 0,
+        out["mentions_abnormal"] / out["volatility_20d"],
+        0.0,
+    )
+
+    # 5. mention spike scaled by 20-day average volume (attention per unit liquidity)
+    out["mentions_volume_scaled"] = np.where(
+        vol_ma20 > 0,
+        men_lag1 / vol_ma20,
         0.0,
     )
 
