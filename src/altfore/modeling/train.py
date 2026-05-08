@@ -17,6 +17,14 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 
 from altfore.modeling.features import FEATURE_COLS, TARGET_COL, build_features
+from altfore.modeling.evaluate import (
+    brier_score,
+    conditional_ic,
+    long_short_metrics,
+    precision_at_thresholds,
+    quintile_returns,
+    rolling_ic_monthly,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -178,3 +186,85 @@ def run_train(project_root: Path) -> None:
     LOGGER.info("\n%s", ic_pivot.to_string())
 
     LOGGER.info("\nSaved -> %s", output_dir / "model_comparison.csv")
+
+    # ── Deep evaluation on Extra Trees (primary model) ────────────────────────
+    LOGGER.info("\n=== EXTRA TREES — DEEP EVALUATION ===")
+
+    primary_name = "extra_trees"
+    all_deep_rows: list[dict] = []
+    all_ls_series: list[pd.Series] = []
+
+    for train_years, val_year, test_year in SPLITS:
+        train_label = f"{min(train_years)}-{max(train_years)}"
+        train_mask = df["date"].dt.year.isin(train_years)
+        val_mask = df["date"].dt.year == val_year
+        test_mask = df["date"].dt.year == test_year
+
+        # re-fit primary model on this split
+        primary = ExtraTreesClassifier(
+            n_estimators=300, max_depth=5, min_samples_leaf=20,
+            random_state=42, n_jobs=-1,
+        )
+        primary.fit(df.loc[train_mask, FEATURE_COLS], df.loc[train_mask, TARGET_COL])
+
+        test_df_split = df.loc[test_mask].copy()
+        proba = primary.predict_proba(test_df_split[FEATURE_COLS])[:, 1]
+        test_df_split["proba"] = proba
+
+        LOGGER.info("\n-- test=%d --", test_year)
+
+        # brier score
+        bs = brier_score(test_df_split[TARGET_COL], test_df_split["proba"])
+        LOGGER.info("  Brier score: %.4f  (baseline 0.25)", bs)
+
+        # precision at thresholds
+        prec = precision_at_thresholds(test_df_split[TARGET_COL], test_df_split["proba"])
+        LOGGER.info("  Precision at confidence thresholds:\n%s", prec.to_string(index=False))
+
+        # quintile return spread
+        qr = quintile_returns(test_df_split, prob_col="proba", return_col="return_fwd_1d")
+        LOGGER.info("  Quintile return spread:\n%s", qr.to_string())
+        q5_q1 = qr["mean_return"].iloc[-1] - qr["mean_return"].iloc[0]
+        LOGGER.info("  Q5-Q1 spread: %.5f (%.2f bps/day)", q5_q1, q5_q1 * 10000)
+
+        # long-short portfolio
+        ls = long_short_metrics(test_df_split, prob_col="proba", return_col="return_fwd_1d")
+        LOGGER.info(
+            "  Long-short: ann_ret=%.2f%%  Sharpe=%.3f  max_dd=%.2f%%  win_rate=%.1f%%  t=%.2f  n_days=%d",
+            ls["ann_return"] * 100, ls["sharpe"],
+            ls["max_drawdown"] * 100, ls["win_rate"] * 100,
+            ls["t_stat"], ls["n_days"],
+        )
+        if "daily_series" in ls:
+            all_ls_series.append(ls["daily_series"].rename(str(test_year)))
+
+        # rolling monthly IC
+        ric = rolling_ic_monthly(test_df_split, prob_col="proba", target_col=TARGET_COL)
+        pct_positive = int(ric["ic_positive"].mean() * 100) if not ric.empty else 0
+        LOGGER.info("  Monthly IC: mean=%.4f  pct_positive=%d%%\n%s",
+                    ric["ic"].mean(), pct_positive, ric.to_string(index=False))
+
+        # conditional IC
+        cic = conditional_ic(test_df_split, prob_col="proba", target_col=TARGET_COL)
+        LOGGER.info("  Conditional IC:\n%s", cic.to_string(index=False))
+
+        # accumulate for CSV
+        all_deep_rows.append({
+            "train": train_label, "test_year": test_year,
+            "brier": round(bs, 4),
+            "ls_ann_return": ls.get("ann_return"),
+            "ls_sharpe": ls.get("sharpe"),
+            "ls_max_dd": ls.get("max_drawdown"),
+            "ls_win_rate": ls.get("win_rate"),
+            "ls_t_stat": ls.get("t_stat"),
+            "q5_q1_spread": round(q5_q1, 6),
+        })
+
+    deep_df = pd.DataFrame(all_deep_rows)
+    deep_df.to_csv(output_dir / "deep_eval.csv", index=False)
+    LOGGER.info("\nSaved -> %s", output_dir / "deep_eval.csv")
+
+    if all_ls_series:
+        ls_df = pd.concat(all_ls_series, axis=1).sort_index()
+        ls_df.to_csv(output_dir / "ls_daily_returns.csv")
+        LOGGER.info("Saved -> %s", output_dir / "ls_daily_returns.csv")
