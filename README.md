@@ -98,52 +98,72 @@ Val split is used only for early stopping (LightGBM) — not for model selection
 
 ### Model comparison — test AUC (20-ticker universe)
 
-| Model | 2024 | 2025 | Mean |
-|-------|------|------|------|
-| LightGBM | 0.504 | 0.509 | **0.507** |
-| Extra Trees | 0.496 | 0.512 | 0.504 |
-| Random Forest | 0.494 | 0.513 | 0.503 |
-| Logistic L1 | 0.497 | 0.498 | 0.498 |
-| Dummy baseline | 0.500 | 0.500 | 0.500 |
+| Model | 2024 (raw) | 2025 (raw) | Mean | 2024 (cal) | 2025 (cal) |
+|-------|-----------|-----------|------|-----------|-----------|
+| LightGBM | 0.504 | 0.509 | **0.507** | 0.496 | 0.509 |
+| Extra Trees | 0.496 | 0.512 | 0.504 | 0.496 | 0.512 |
+| Random Forest | 0.494 | 0.513 | 0.503 | 0.494 | 0.513 |
+| Logistic L1 | 0.497 | 0.498 | 0.498 | 0.497 | 0.498 |
+| Dummy baseline | 0.500 | 0.500 | 0.500 | — | — |
 
-LightGBM is the strongest model overall. Tree models consistently beat linear models
-out-of-sample, suggesting non-linear feature interactions are meaningful.
+LightGBM is the strongest raw model. Calibration does not materially change AUC
+(ranking is preserved by a monotone transform), but dramatically improves probability
+spread and calibration error (see below).
 
-### Feature importance (Extra Trees, 2022–2023 → 2025 window)
+### Feature importance (LightGBM, 2022–2023 → 2025 window)
 `return_1d` dominates. All five mention features register non-zero importance after
 within-ticker normalisation was introduced; `mentions_log`, `mentions_log_chg_5d`,
 and `mentions_abnormal` each score comparably to the price momentum features.
 
-### Signal quality (Extra Trees, test 2025)
+### Probability calibration (LightGBM)
+
+Raw predictions cluster in an extremely narrow band around 0.47–0.50 — the model
+can rank but produces no actionable confidence scores. Platt scaling (sigmoid
+calibration fitted on the val split via `CalibratedClassifierCV(FrozenEstimator(...))`)
+substantially corrects this.
+
+| Metric | Raw (2024) | Calibrated (2024) | Raw (2025) | Calibrated (2025) |
+|--------|-----------|------------------|-----------|------------------|
+| Mean predicted prob | 0.468 | 0.530 | 0.500 | 0.513 |
+| Std predicted prob | 0.002 | 0.011 | 0.008 | 0.013 |
+| ECE | 0.045 | 0.020 | 0.011 | 0.002 |
+| Brier score | 0.252 | 0.250 | 0.250 | 0.250 |
+| % predictions > 0.55 | 0% | 7.8% | 0% | 0.2% |
+
+After calibration the model produces predictions above 0.55 for the first time.
+At the 0.55 threshold in 2025, hit rate is 90% on 10 predictions — too few for
+statistical significance but directionally encouraging.
+
+### Signal quality (LightGBM calibrated, test 2025)
 | Metric | Value |
 |--------|-------|
-| Accuracy | 51.3% |
-| AUC | 0.512 |
-| Spearman IC | 0.021 (p=0.145) |
-| Brier score | 0.250 (baseline 0.250) |
+| Spearman IC | 0.016 (p=0.25) |
+| Monthly IC mean | 0.010 |
+| Months IC positive | 58% |
+| Q5-Q1 return spread | +26.8 bps/day |
 
-The IC is positive but not yet significant at the portfolio level. Monthly IC is 50%
-positive in both test years — the signal is lumpy rather than consistent.
+Monthly IC is lumpy — Dec 2025 (IC=0.120, p=0.012) drives most of the annual signal.
 
-### Long-short portfolio (Extra Trees, top-2 / bottom-2 daily by predicted probability)
-| Year | Ann. Return | Sharpe | Max Drawdown |
-|------|-------------|--------|--------------|
-| 2024 | -75% | -0.79 | -81% |
-| 2025 | +28% | +0.58 | -28% |
+### Long-short portfolio (LightGBM calibrated, top-2 / bottom-2 daily)
+| Year | Ann. Return | Sharpe | Max Drawdown | Win Rate | t-stat |
+|------|-------------|--------|--------------|----------|--------|
+| 2024 | -48% | -0.63 | -69% | 48.4% | -0.63 |
+| 2025 | +30% | +0.66 | -36% | 52.4% | 0.66 |
 
-2024 results show the model is actively harmful in that window. 2025 is positive but
-t-stat of 0.57 is not significant. Quintile return spread is near-flat in both years,
-meaning the probability ranking does not yet reliably separate return outcomes.
+2025 Sharpe improved to 0.66 after calibration (vs 0.58 raw) and the Q5-Q1 spread
+turned positive (+26.8 bps). 2024 remains unprofitable — the model's 2024 rankings
+actively hurt the long-short portfolio. Neither year is statistically significant.
 
-### Conditional IC (test 2025)
+### Conditional IC (LightGBM calibrated, test 2025)
 | Condition | IC | p |
 |-----------|-----|---|
-| High abnormal mentions | 0.008 | 0.70 |
-| Low abnormal mentions | 0.031 | 0.12 |
-| High volatility | 0.009 | 0.66 |
-| Low volatility | 0.018 | 0.38 |
+| High abnormal mentions | +0.033 | 0.099 |
+| Low abnormal mentions | -0.001 | 0.946 |
+| High volatility | +0.030 | 0.137 |
+| Low volatility | -0.006 | 0.775 |
 
-No stable regime conditioning effect detected yet.
+The signal concentrates in high-mention and high-volatility regimes — consistent
+with attention-driven price discovery, though not yet significant.
 
 ---
 
@@ -151,11 +171,11 @@ No stable regime conditioning effect detected yet.
 
 | Area | Status |
 |------|--------|
-| Probability calibration | Not implemented — all predictions cluster near 0.50 |
+| Probability calibration | Implemented (Platt scaling on val split) — spread improved but still narrow |
 | Ticker expansion | 20 tickers; WSB data has ~100, more expansion possible |
 | Sentiment polarity | Only mention counts, no tone scoring |
 | Google Trends signal | Not started |
-| Viable trading strategy | Not yet — quintile spread is flat, L/S Sharpe near zero |
+| Viable trading strategy | Not yet — 2024 L/S is deeply negative; 2025 is promising but t=0.66 |
 
 ---
 

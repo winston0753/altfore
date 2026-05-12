@@ -9,6 +9,8 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 from scipy import stats
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.frozen import FrozenEstimator
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -19,6 +21,7 @@ from sklearn.pipeline import Pipeline
 from altfore.modeling.features import FEATURE_COLS, TARGET_COL, build_features
 from altfore.modeling.evaluate import (
     brier_score,
+    calibration_metrics,
     conditional_ic,
     long_short_metrics,
     precision_at_thresholds,
@@ -90,6 +93,13 @@ def _fit(model, X_train, y_train, X_val, y_val) -> None:
         model.fit(X_train, y_train)
 
 
+def _calibrate(fitted_model, X_val, y_val):
+    """Wrap a fitted model with Platt scaling calibrated on the val split."""
+    cal = CalibratedClassifierCV(FrozenEstimator(fitted_model), method="sigmoid")
+    cal.fit(X_val, y_val)
+    return cal
+
+
 def _feature_importances(model) -> pd.Series | None:
     """Return feature importances for tree models, None otherwise."""
     clf = model.named_steps["clf"] if hasattr(model, "named_steps") else model
@@ -145,22 +155,30 @@ def run_train(project_root: Path) -> None:
         for model_name, model in MODEL_REGISTRY:
             _fit(model, X_train, y_train, X_val, y_val)
 
+            # raw metrics
             for split_name, X, y in [("val", X_val, y_val), ("test", X_test, y_test)]:
                 year = val_year if split_name == "val" else test_year
                 metrics = _eval_split(model, X, y)
-                row = {"model": model_name, "train": train_label, "split": split_name, "year": year, **metrics}
+                row = {"model": model_name, "train": train_label, "split": split_name,
+                       "year": year, "calibrated": False, **metrics}
                 all_results.append(row)
-                LOGGER.info(
-                    "  %-15s %s %d | acc=%.3f auc=%.3f IC=%.4f t=%.2f p=%.3f",
-                    model_name, split_name, year,
-                    metrics["accuracy"], metrics["auc"],
-                    metrics["ic"], metrics["ic_tstat"], metrics["ic_pval"],
-                )
+
+            # calibrated metrics on test only (val is consumed by calibration itself)
+            if model_name != "dummy":
+                try:
+                    cal_model = _calibrate(model, X_val, y_val)
+                    cal_metrics = _eval_split(cal_model, X_test, y_test)
+                    cal_row = {"model": model_name, "train": train_label, "split": "test",
+                               "year": test_year, "calibrated": True, **cal_metrics}
+                    all_results.append(cal_row)
+                except Exception as exc:
+                    LOGGER.warning("Calibration failed for %s: %s", model_name, exc)
 
             imp = _feature_importances(model)
             if imp is not None:
                 for feat, score in imp.items():
-                    all_importances.append({"model": model_name, "train": train_label, "feature": feat, "importance": score})
+                    all_importances.append({"model": model_name, "train": train_label,
+                                            "feature": feat, "importance": score})
 
     results_df = pd.DataFrame(all_results)
     results_df.to_csv(output_dir / "model_comparison.csv", index=False)
@@ -169,28 +187,31 @@ def run_train(project_root: Path) -> None:
     if not imp_df.empty:
         imp_df.to_csv(output_dir / "feature_importance.csv", index=False)
 
-    # summary pivot: test-split AUC by model × window
-    test_df = results_df[results_df["split"] == "test"]
-    pivot = test_df.pivot_table(index="model", columns="year", values="auc").round(4)
+    # summary pivots — raw test AUC
+    raw_test = results_df[(results_df["split"] == "test") & (~results_df["calibrated"])]
+    pivot = raw_test.pivot_table(index="model", columns="year", values="auc").round(4)
     pivot["mean_auc"] = pivot.mean(axis=1).round(4)
     pivot = pivot.sort_values("mean_auc", ascending=False)
+    LOGGER.info("\n=== TEST AUC — RAW ===\n%s", pivot.to_string())
 
-    LOGGER.info("\n=== TEST AUC COMPARISON ===")
-    LOGGER.info("\n%s", pivot.to_string())
+    # calibrated test AUC
+    cal_test = results_df[(results_df["split"] == "test") & (results_df["calibrated"])]
+    if not cal_test.empty:
+        cal_pivot = cal_test.pivot_table(index="model", columns="year", values="auc").round(4)
+        cal_pivot["mean_auc"] = cal_pivot.mean(axis=1).round(4)
+        cal_pivot = cal_pivot.sort_values("mean_auc", ascending=False)
+        LOGGER.info("\n=== TEST AUC — CALIBRATED ===\n%s", cal_pivot.to_string())
 
-    ic_pivot = test_df.pivot_table(index="model", columns="year", values="ic").round(4)
+    ic_pivot = raw_test.pivot_table(index="model", columns="year", values="ic").round(4)
     ic_pivot["mean_ic"] = ic_pivot.mean(axis=1).round(4)
     ic_pivot = ic_pivot.sort_values("mean_ic", ascending=False)
-
-    LOGGER.info("\n=== TEST IC COMPARISON ===")
-    LOGGER.info("\n%s", ic_pivot.to_string())
+    LOGGER.info("\n=== TEST IC — RAW ===\n%s", ic_pivot.to_string())
 
     LOGGER.info("\nSaved -> %s", output_dir / "model_comparison.csv")
 
-    # ── Deep evaluation on Extra Trees (primary model) ────────────────────────
-    LOGGER.info("\n=== EXTRA TREES — DEEP EVALUATION ===")
+    # ── Deep evaluation: LightGBM raw vs calibrated ───────────────────────────
+    LOGGER.info("\n=== LIGHTGBM — DEEP EVALUATION (RAW vs CALIBRATED) ===")
 
-    primary_name = "extra_trees"
     all_deep_rows: list[dict] = []
     all_ls_series: list[pd.Series] = []
 
@@ -200,64 +221,74 @@ def run_train(project_root: Path) -> None:
         val_mask = df["date"].dt.year == val_year
         test_mask = df["date"].dt.year == test_year
 
-        # re-fit primary model on this split
-        primary = ExtraTreesClassifier(
-            n_estimators=300, max_depth=5, min_samples_leaf=20,
-            random_state=42, n_jobs=-1,
+        lgb_model = lgb.LGBMClassifier(**LGB_PARAMS)
+        lgb_model.fit(
+            df.loc[train_mask, FEATURE_COLS], df.loc[train_mask, TARGET_COL],
+            eval_set=[(df.loc[val_mask, FEATURE_COLS], df.loc[val_mask, TARGET_COL])],
+            callbacks=[lgb.early_stopping(30, verbose=False), lgb.log_evaluation(period=-1)],
         )
-        primary.fit(df.loc[train_mask, FEATURE_COLS], df.loc[train_mask, TARGET_COL])
+        cal_lgb = _calibrate(lgb_model, df.loc[val_mask, FEATURE_COLS], df.loc[val_mask, TARGET_COL])
 
         test_df_split = df.loc[test_mask].copy()
-        proba = primary.predict_proba(test_df_split[FEATURE_COLS])[:, 1]
-        test_df_split["proba"] = proba
+        X_test_split = test_df_split[FEATURE_COLS]
+
+        raw_proba = pd.Series(lgb_model.predict_proba(X_test_split)[:, 1], index=test_df_split.index)
+        cal_proba = pd.Series(cal_lgb.predict_proba(X_test_split)[:, 1], index=test_df_split.index)
 
         LOGGER.info("\n-- test=%d --", test_year)
 
-        # brier score
-        bs = brier_score(test_df_split[TARGET_COL], test_df_split["proba"])
-        LOGGER.info("  Brier score: %.4f  (baseline 0.25)", bs)
+        for label, proba in [("raw", raw_proba), ("calibrated", cal_proba)]:
+            cm = calibration_metrics(test_df_split[TARGET_COL], proba)
+            bs = brier_score(test_df_split[TARGET_COL], proba)
+            LOGGER.info(
+                "  [%s] Brier=%.4f  ECE=%.5f  mean_p=%.4f  std_p=%.4f  "
+                "pct>52=%.1f%%  pct>55=%.1f%%  pct>60=%.1f%%",
+                label, bs, cm["ece"], cm["mean_proba"], cm["std_proba"],
+                cm["pct_above_52"], cm["pct_above_55"], cm["pct_above_60"],
+            )
+            LOGGER.info("  [%s] Reliability bins:\n%s", label, cm["bin_table"].to_string(index=False))
 
-        # precision at thresholds
+        # use calibrated proba for downstream metrics
+        test_df_split["proba"] = cal_proba.values
+
         prec = precision_at_thresholds(test_df_split[TARGET_COL], test_df_split["proba"])
-        LOGGER.info("  Precision at confidence thresholds:\n%s", prec.to_string(index=False))
+        LOGGER.info("  Precision at thresholds (calibrated):\n%s", prec.to_string(index=False))
 
-        # quintile return spread
         qr = quintile_returns(test_df_split, prob_col="proba", return_col="return_fwd_1d")
-        LOGGER.info("  Quintile return spread:\n%s", qr.to_string())
         q5_q1 = qr["mean_return"].iloc[-1] - qr["mean_return"].iloc[0]
+        LOGGER.info("  Quintile returns (calibrated):\n%s", qr.to_string())
         LOGGER.info("  Q5-Q1 spread: %.5f (%.2f bps/day)", q5_q1, q5_q1 * 10000)
 
-        # long-short portfolio
         ls = long_short_metrics(test_df_split, prob_col="proba", return_col="return_fwd_1d")
         LOGGER.info(
-            "  Long-short: ann_ret=%.2f%%  Sharpe=%.3f  max_dd=%.2f%%  win_rate=%.1f%%  t=%.2f  n_days=%d",
-            ls["ann_return"] * 100, ls["sharpe"],
-            ls["max_drawdown"] * 100, ls["win_rate"] * 100,
-            ls["t_stat"], ls["n_days"],
+            "  Long-short (calibrated): ann_ret=%.2f%%  Sharpe=%.3f  "
+            "max_dd=%.2f%%  win_rate=%.1f%%  t=%.2f  n_days=%d",
+            ls["ann_return"] * 100, ls["sharpe"], ls["max_drawdown"] * 100,
+            ls["win_rate"] * 100, ls["t_stat"], ls["n_days"],
         )
         if "daily_series" in ls:
             all_ls_series.append(ls["daily_series"].rename(str(test_year)))
 
-        # rolling monthly IC
         ric = rolling_ic_monthly(test_df_split, prob_col="proba", target_col=TARGET_COL)
-        pct_positive = int(ric["ic_positive"].mean() * 100) if not ric.empty else 0
-        LOGGER.info("  Monthly IC: mean=%.4f  pct_positive=%d%%\n%s",
-                    ric["ic"].mean(), pct_positive, ric.to_string(index=False))
+        pct_pos = int(ric["ic_positive"].mean() * 100) if not ric.empty else 0
+        LOGGER.info("  Monthly IC (calibrated): mean=%.4f  pct_positive=%d%%\n%s",
+                    ric["ic"].mean(), pct_pos, ric.to_string(index=False))
 
-        # conditional IC
         cic = conditional_ic(test_df_split, prob_col="proba", target_col=TARGET_COL)
-        LOGGER.info("  Conditional IC:\n%s", cic.to_string(index=False))
+        LOGGER.info("  Conditional IC (calibrated):\n%s", cic.to_string(index=False))
 
-        # accumulate for CSV
+        raw_cm = calibration_metrics(test_df_split[TARGET_COL], raw_proba)
+        cal_cm = calibration_metrics(test_df_split[TARGET_COL], cal_proba)
         all_deep_rows.append({
             "train": train_label, "test_year": test_year,
-            "brier": round(bs, 4),
-            "ls_ann_return": ls.get("ann_return"),
-            "ls_sharpe": ls.get("sharpe"),
-            "ls_max_dd": ls.get("max_drawdown"),
-            "ls_win_rate": ls.get("win_rate"),
-            "ls_t_stat": ls.get("t_stat"),
-            "q5_q1_spread": round(q5_q1, 6),
+            "brier_raw": round(brier_score(test_df_split[TARGET_COL], raw_proba), 4),
+            "brier_cal": round(brier_score(test_df_split[TARGET_COL], cal_proba), 4),
+            "ece_raw": raw_cm["ece"], "ece_cal": cal_cm["ece"],
+            "std_proba_raw": raw_cm["std_proba"], "std_proba_cal": cal_cm["std_proba"],
+            "pct_above_55_cal": cal_cm["pct_above_55"],
+            "ls_ann_return": ls.get("ann_return"), "ls_sharpe": ls.get("sharpe"),
+            "ls_max_dd": ls.get("max_drawdown"), "ls_win_rate": ls.get("win_rate"),
+            "ls_t_stat": ls.get("t_stat"), "q5_q1_spread": round(q5_q1, 6),
         })
 
     deep_df = pd.DataFrame(all_deep_rows)
