@@ -15,6 +15,18 @@ from altfore.pipeline.model_dataset import (
 
 LOGGER = logging.getLogger(__name__)
 
+# Curated ticker universe: all-5-year WSB coverage, tradeable stocks only.
+# Dropped: ORCL, IREN (1/5-year WSB coverage — too sparse for time-series features).
+# Skipped Tier-1 entries with high noise: BB (meme legacy), TLRY (cannabis penny),
+# BABA (ADR geopolitical distortion), SOFI/HOOD (borderline).
+TICKERS: list[str] = [
+    # original set (kept)
+    "AMC", "AMZN", "F", "GME", "LULU", "MSFT", "MU", "NVDA",
+    # Tier-1 additions — all 5 years of WSB data, solid mention volume
+    "AAPL", "AMD", "BA", "COIN", "GM", "INTC",
+    "JPM", "NFLX", "PLTR", "SNAP", "TSM", "TSLA",
+]
+
 
 def load_wsb_mentions(wsb_dir: Path, tickers: list[str]) -> pd.DataFrame:
     """Load all WSB CSVs, melt to long (date, ticker, mentions), filter to tickers."""
@@ -51,21 +63,19 @@ def run_build_wsb_dataset(project_root: Path) -> None:
     """Build the WSB-era price + mentions dataset and write it to dataset/."""
     wsb_dir = project_root / "wsb_data"
     dataset_dir = project_root / "dataset"
-    prices_path = dataset_dir / "prices_daily.csv"
     output_path = dataset_dir / "wsb_model_dataset.csv"
 
-    prices_tickers = set(
-        pd.read_csv(prices_path, usecols=["ticker"])["ticker"]
-        .astype(str).str.strip().str.upper()
-    )
-
+    # verify each curated ticker actually appears in at least one WSB file
     wsb_tickers: set[str] = set()
     for path in sorted(wsb_dir.glob("wallstreetbets_*.csv")):
         df = pd.read_csv(path, usecols=["ticker"])
         wsb_tickers.update(df["ticker"].astype(str).str.strip().str.upper())
 
-    common_tickers = sorted(prices_tickers & wsb_tickers)
-    LOGGER.info("Common tickers (%d): %s", len(common_tickers), common_tickers)
+    common_tickers = sorted(t for t in TICKERS if t in wsb_tickers)
+    missing = sorted(t for t in TICKERS if t not in wsb_tickers)
+    if missing:
+        LOGGER.warning("Tickers in TICKERS but absent from all WSB files: %s", missing)
+    LOGGER.info("Building dataset for %d tickers: %s", len(common_tickers), common_tickers)
 
     mentions_df = load_wsb_mentions(wsb_dir, common_tickers)
     start_date = mentions_df["date"].min()
