@@ -59,6 +59,34 @@ def load_wsb_mentions(wsb_dir: Path, tickers: list[str]) -> pd.DataFrame:
     return out
 
 
+def load_google_trends(trends_path: Path, all_dates: pd.DatetimeIndex) -> pd.DataFrame | None:
+    """Load trends_daily.csv and forward-fill weekly observations to daily.
+
+    Google Trends returns one value per week (week-start date). We forward-fill
+    each ticker's weekly interest to every calendar day so it can be merged on
+    the daily price index. Returns long-format (date, ticker, trends_interest),
+    or None if the file does not exist.
+    """
+    if not trends_path.exists():
+        return None
+
+    df = pd.read_csv(trends_path, parse_dates=["date"])
+    df["date"] = df["date"].dt.normalize()
+
+    filled_frames: list[pd.DataFrame] = []
+    for ticker, grp in df.groupby("ticker"):
+        grp = grp.set_index("date")[["trends_interest"]].sort_index()
+        grp = grp.reindex(all_dates).ffill()
+        grp["ticker"] = ticker
+        grp = grp.reset_index().rename(columns={"index": "date"})
+        filled_frames.append(grp)
+
+    if not filled_frames:
+        return None
+
+    return pd.concat(filled_frames, ignore_index=True)
+
+
 def run_build_wsb_dataset(project_root: Path) -> None:
     """Build the WSB-era price + mentions dataset and write it to dataset/."""
     wsb_dir = project_root / "wsb_data"
@@ -95,7 +123,19 @@ def run_build_wsb_dataset(project_root: Path) -> None:
     merged = prices_df.merge(mentions_df, on=["date", "ticker"], how="left")
     merged["mentions"] = merged["mentions"].fillna(0).astype(int)
 
-    col_order = PRICE_OUTPUT_COLUMNS + ["mentions"]
+    # merge Google Trends if available
+    trends_path = dataset_dir / "trends_daily.csv"
+    all_dates = pd.DatetimeIndex(merged["date"].unique())
+    trends_df = load_google_trends(trends_path, all_dates)
+    if trends_df is not None:
+        merged = merged.merge(trends_df, on=["date", "ticker"], how="left")
+        merged["trends_interest"] = merged["trends_interest"].fillna(0.0)
+        LOGGER.info("Merged Google Trends data (%d rows)", len(trends_df))
+    else:
+        merged["trends_interest"] = 0.0
+        LOGGER.info("trends_daily.csv not found — trends_interest set to 0; run build_trends_dataset.py first")
+
+    col_order = PRICE_OUTPUT_COLUMNS + ["mentions", "trends_interest"]
     merged = (
         merged[col_order]
         .sort_values(["ticker", "date"])

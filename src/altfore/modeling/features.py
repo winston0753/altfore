@@ -17,6 +17,11 @@ FEATURE_COLS = [
     "mentions_abnormal",
     "mentions_vol_scaled",
     "mentions_volume_scaled",
+    # Google Trends features (within-ticker normalized; zero when trends not fetched)
+    "trends_log",
+    "trends_abnormal",
+    "trends_chg_5d",
+    "trends_mentions_divergence",
 ]
 
 TARGET_COL = "direction_fwd_1d"
@@ -90,6 +95,49 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         men_lag1 / vol_ma20,
         0.0,
     )
+
+    # --- Google Trends features (within-ticker normalized) ---
+    # trends_interest is weekly (forward-filled to daily); all features lag 1 day.
+    # When trends were not fetched, trends_interest is 0 → all features are 0
+    # and carry zero importance in the model.
+
+    grp_trends = out.groupby("ticker")["trends_interest"]
+
+    # 1. log1p of forward-filled weekly search interest (lagged 1 day)
+    trends_lag1 = grp_trends.transform(lambda s: s.shift(1))
+    out["trends_log"] = np.log1p(trends_lag1)
+
+    # 2. z-score of trends_log vs 30-day rolling (abnormal search attention)
+    trends_log_grp = out.groupby("ticker")["trends_log"]
+    trends_roll_mean = trends_log_grp.transform(
+        lambda s: s.rolling(30, min_periods=5).mean()
+    )
+    trends_roll_std = trends_log_grp.transform(
+        lambda s: s.rolling(30, min_periods=5).std()
+    )
+    out["trends_abnormal"] = np.where(
+        trends_roll_std > 0,
+        (out["trends_log"] - trends_roll_mean) / trends_roll_std,
+        0.0,
+    )
+
+    # 3. pct change of 7-day smoothed trends_log vs 5 days ago (search momentum)
+    smooth7_trends = trends_log_grp.transform(
+        lambda s: s.rolling(7, min_periods=1).mean()
+    )
+    smooth7_trends_lag5 = smooth7_trends.groupby(out["ticker"]).transform(
+        lambda s: s.shift(5)
+    )
+    out["trends_chg_5d"] = np.where(
+        smooth7_trends_lag5 > 0,
+        smooth7_trends / smooth7_trends_lag5 - 1,
+        0.0,
+    )
+
+    # 4. search-vs-social divergence: abnormal search attention minus abnormal mentions
+    #    positive → search spike without Reddit buzz (quiet accumulation)
+    #    negative → Reddit buzz without search interest (echo chamber)
+    out["trends_mentions_divergence"] = out["trends_abnormal"] - out["mentions_abnormal"]
 
     # targets
     fwd_close = grp_close.transform(lambda s: s.shift(-1))

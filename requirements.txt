@@ -7,3 +7,4 @@ matplotlib
 lightgbm
 scikit-learn
 scipy
+pytrends
