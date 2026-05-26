@@ -45,7 +45,7 @@ def fetch_trends(
     Returns a long-format DataFrame: date, ticker, trends_interest.
     Dates are week-start (Sunday) timestamps as returned by the API.
     """
-    client = TrendReq(hl="en-US", tz=360, retries=3, backoff_factor=0.5)
+    client = TrendReq(hl="en-US", tz=360)
     timeframe = f"{start_date} {end_date}"
 
     batches = [tickers[i : i + BATCH_SIZE] for i in range(0, len(tickers), BATCH_SIZE)]
