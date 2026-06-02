@@ -127,6 +127,7 @@ def long_short_metrics(
     return_col: str = "return_fwd_1d",
     top_n: int = 2,
     bottom_n: int = 2,
+    periods_per_year: int = 252,
 ) -> dict:
     """Daily equal-weight long top-N / short bottom-N portfolio.
 
@@ -149,8 +150,8 @@ def long_short_metrics(
         return {}
 
     series = pd.Series(daily, index=dates)
-    ann_ret = float(series.mean() * 252)
-    ann_vol = float(series.std() * np.sqrt(252))
+    ann_ret = float(series.mean() * periods_per_year)
+    ann_vol = float(series.std() * np.sqrt(periods_per_year))
     sharpe = ann_ret / ann_vol if ann_vol > 0 else float("nan")
 
     cum = (1 + series).cumprod()
@@ -201,6 +202,8 @@ def conditional_ic(
     df: pd.DataFrame,
     prob_col: str = "proba",
     target_col: str = "direction_fwd_1d",
+    mention_col: str = "mentions_abnormal",
+    volatility_col: str = "volatility_20d",
 ) -> pd.DataFrame:
     """IC split by mention regime and volatility regime."""
     rows = []
@@ -212,12 +215,12 @@ def conditional_ic(
         ic, p = stats.spearmanr(sub[prob_col], sub[target_col])
         return {"condition": label, "ic": round(float(ic), 4), "p": round(float(p), 4), "n": len(sub)}
 
-    med_abn = df["mentions_abnormal"].median()
-    rows.append(_ic_row("mentions_high", df["mentions_abnormal"] > med_abn))
-    rows.append(_ic_row("mentions_low", df["mentions_abnormal"] <= med_abn))
+    med_abn = df[mention_col].median()
+    rows.append(_ic_row("mentions_high", df[mention_col] > med_abn))
+    rows.append(_ic_row("mentions_low", df[mention_col] <= med_abn))
 
-    med_vol = df["volatility_20d"].median()
-    rows.append(_ic_row("vol_high", df["volatility_20d"] > med_vol))
-    rows.append(_ic_row("vol_low", df["volatility_20d"] <= med_vol))
+    med_vol = df[volatility_col].median()
+    rows.append(_ic_row("vol_high", df[volatility_col] > med_vol))
+    rows.append(_ic_row("vol_low", df[volatility_col] <= med_vol))
 
     return pd.DataFrame([r for r in rows if r])

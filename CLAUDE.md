@@ -29,6 +29,10 @@ repo layout and **two distinct mention data paths** (do not conflate them).
 - `python scripts/build_wsb_dataset.py` — `wsb_data/` → `dataset/wsb_model_dataset.csv`
 - `python scripts/train_model.py` — train / evaluate models; writes comparison CSVs under `dataset/`
 
+**Weekly horizon (runs after build_wsb_dataset.py)**
+- `python scripts/build_period_dataset.py` — resample daily panel → `dataset/wsb_weekly_dataset.csv`
+- `python scripts/train_period_model.py` — walk-forward on weekly panel; writes `weekly_model_comparison.csv`, `weekly_deep_eval.csv`, `weekly_feature_importance.csv`, `weekly_ls_returns.csv`
+
 **RSS path (optional)**
 - `python scripts/build_reddit_mentions.py` — RSS → `reddit_mentions*.csv`
 - `python scripts/build_model_dataset.py` — `reddit_mentions_daily.csv` + Yahoo → `model_dataset.csv`
@@ -41,8 +45,8 @@ Other helpers: `plot_ticker_mentions.py`, `plot_returns_vs_mentions.py`.
 ## Architecture
 - `scripts/` — stable CLI entrypoints, thin wrappers only
 - `src/altfore/ingest/` — Reddit RSS fetching and parsing (`reddit_mentions` path)
-- `src/altfore/pipeline/` — dataset construction (WSB panel + shared price helpers; RSS-backed `model_dataset` merge)
-- `src/altfore/modeling/` — WSB feature engineering, training, evaluation metrics
+- `src/altfore/pipeline/` — dataset construction (WSB panel + shared price helpers; RSS-backed `model_dataset` merge; `resample.py` for weekly aggregation)
+- `src/altfore/modeling/` — WSB feature engineering (`features.py` daily, `features_period.py` weekly), training (`train.py` daily, `train_period.py` weekly), evaluation metrics
 - `src/altfore/visualization/` — plotting utilities
 - `wsb_data/` — raw WSB mention CSVs (do not hand-edit)
 - `dataset/` — generated outputs (do not hand-edit)

@@ -192,6 +192,59 @@ model has no edge in quiet periods.
 
 ---
 
+## Observations
+
+Several empirical patterns emerged from the daily-horizon experiments:
+
+**Next-day AUC is near-random.** Even with 14 features spanning price, Reddit mentions, and Google Trends, test AUC hovers at 0.504 — effectively random at the single-prediction level. This is expected near the efficient market boundary; no feature set reliably predicts tomorrow's close.
+
+**Portfolio edge exists through cross-sectional ranking, not point prediction.** The model cannot reliably say "TSLA goes up tomorrow," but it ranks stocks by relative conviction well enough that a top-2 long / bottom-2 short strategy achieves Sharpe ~1.0 across both test years. The edge is in ordering, not direction.
+
+**Reddit + Trends act as a regime filter, not a directional signal.** Cross-sectional IC is +0.032 when mentions are abnormally high, near zero in quiet periods. The combined signals identify *when* attention-driven price discovery may be active; they do not resolve which direction the price moves unconditionally.
+
+**The overnight attention-to-price mechanism is weak.** Expecting a stock to rise or fall the next day based on yesterday's mention count imposes an extremely tight reaction window. A more defensible hypothesis: sustained attention over a week or more accumulates and persists, giving price action time to respond. This motivates the weekly extension below.
+
+**Google Trends is structurally weekly.** Weekly Trends values are forward-filled to daily in the current model — a fundamental granularity mismatch. A weekly forecasting horizon aligns the signal with its native resolution and eliminates the forward-fill approximation.
+
+---
+
+## Weekly Horizon Extension
+
+**Motivation.** Aggregating mention signals over a full trading week reduces noise from one-day spikes, aligns naturally with the Google Trends data source, and allows time for price to respond to sustained attention. The key distinction the weekly model tests: sustained attention (e.g., 1,000 mentions spread over 5 days) vs. a single-day spike of equal magnitude — a meaningful structural difference obscured in the daily target.
+
+### Weekly features
+
+All features are computed from data available at Friday close of week T, predicting direction at Friday close of week T+1.
+
+| Feature | Description |
+|---------|-------------|
+| `return_1w` | Current week's realised return (lag-1 price momentum) |
+| `momentum_4w` | 4-week price momentum |
+| `momentum_12w` | 12-week price momentum |
+| `volatility_12w` | Rolling 12-week std of weekly returns |
+| `volume_ratio_4w` | Week volume / 4-week average volume |
+| `mentions_sum_log` | log1p of total weekly mention count |
+| `mentions_abnormal_w` | Z-score of weekly mention sum vs 12-week rolling baseline |
+| `mentions_momentum_w` | Pct change of weekly mention sum vs prior week |
+| `mentions_peak_ratio` | Max single-day / mean daily mentions — spike vs sustained attention |
+| `trends_log` | log1p of weekly Trends interest (native granularity; no forward-fill) |
+| `trends_abnormal_w` | Z-score of `trends_log` vs 12-week rolling baseline |
+| `trends_mentions_divergence_w` | `trends_abnormal_w − mentions_abnormal_w` |
+
+`mentions_peak_ratio` is the novel feature here: it distinguishes a stock with evenly distributed weekly attention from one with a single-day spike, testing whether the *pattern* of attention within the week carries information beyond the total volume.
+
+### Walk-forward and portfolio
+
+Same two expanding windows as the daily model (train 2022 → test 2024; train 2022–2023 → test 2025). Long-short portfolio holds for one week and rebalances weekly; annualisation uses 52 periods/year.
+
+**Build and run:**
+```bash
+python scripts/build_period_dataset.py   # → dataset/wsb_weekly_dataset.csv
+python scripts/train_period_model.py     # → dataset/weekly_model_comparison.csv, weekly_deep_eval.csv
+```
+
+---
+
 ## Known Limitations and Next Steps
 
 | Area | Status |
@@ -201,6 +254,7 @@ model has no edge in quiet periods.
 | Sentiment polarity | Only mention counts, no tone scoring |
 | Google Trends granularity | Weekly only for multi-year windows; daily data requires overlapping ~90-day chunks and normalisation stitching |
 | Statistical significance | Best t-stat is 1.03 (2025) — directionally consistent but not significant at p < 0.05 |
+| Weekly horizon | Implemented — see Weekly Horizon Extension section above |
 
 ---
 
