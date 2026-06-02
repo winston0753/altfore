@@ -243,6 +243,56 @@ python scripts/build_period_dataset.py   # → dataset/wsb_weekly_dataset.csv
 python scripts/train_period_model.py     # → dataset/weekly_model_comparison.csv, weekly_deep_eval.csv
 ```
 
+### Weekly results
+
+#### Model comparison — test AUC (20-ticker universe, 12 features)
+
+| Model | 2024 | 2025 | Mean |
+|-------|------|------|------|
+| Random Forest | **0.522** | **0.511** | **0.517** |
+| Logistic L1 | 0.511 | 0.503 | 0.507 |
+| Extra Trees (calibrated) | 0.507 | 0.515 | 0.511 |
+| LightGBM (calibrated) | 0.504 | 0.508 | 0.506 |
+| Dummy baseline | 0.500 | 0.500 | 0.500 |
+
+Random Forest is the most consistent model at the weekly horizon; LightGBM is unremarkable.
+
+#### Feature importance — weekly IC (Random Forest, raw)
+
+Random Forest raw IC: +0.038 (2024) and +0.019 (2025) — both positive and the most stable signal of any weekly model. At n=1,040 test obs per year, these correspond to t-stats near 1.2 — directionally consistent but not statistically significant.
+
+#### Long-short portfolio (LightGBM calibrated, top-2 / bottom-2 weekly)
+
+| Year | Ann. Return | Sharpe | Max Drawdown | Win Rate | t-stat |
+|------|-------------|--------|--------------|----------|--------|
+| 2024 | −31.1% | −0.682 | −47.9% | 50.0% | −0.68 |
+| 2025 | +24.1% | +0.570 | −29.6% | 63.5% | +0.57 |
+
+The weekly LightGBM portfolio is inconsistent across years — opposite sign to the daily model's stability. This is a meaningful negative result.
+
+#### Conditional IC (LightGBM calibrated)
+
+| Condition | 2024 IC | 2025 IC |
+|-----------|---------|---------|
+| High abnormal mentions | −0.053 | +0.029 |
+| Low abnormal mentions | +0.061 | −0.015 |
+| High volatility | +0.015 | +0.037 |
+| Low volatility | +0.009 | −0.008 |
+
+The regime filter that works on the daily model (IC concentrates in high-mention periods) does not survive weekly aggregation. No consistent conditioning variable improves signal.
+
+### Weekly findings and interpretation
+
+**The hypothesis was not confirmed.** Aggregating mentions to weekly does not produce a more reliable signal than next-day prediction. Three structural reasons:
+
+1. **Training data is too small.** The first walk-forward split has only 800 training observations (vs ~16,000 daily). LightGBM cannot learn stable feature interactions at this scale; the results are effectively noise-fitted.
+
+2. **Weekly aggregation destroys within-week variation.** The daily model's edge appears to come primarily from short-horizon price momentum (`return_1d`). Its weekly analogue (`return_1w`) is a noisier version of the same signal, and the attention features do not compensate.
+
+3. **Google Trends adds no new information at weekly resolution.** Since Trends is already a weekly series forward-filled to daily, the weekly model uses the same data at its native granularity — no new signal relative to the daily model's already-incorporated Trends features.
+
+**Discovered bug: Trends data was silently zeroed.** The original `load_google_trends` merge reindexed weekly (Sunday) observations directly to trading-day (Mon–Fri) dates, which dropped all values before `ffill` ran. All `trends_interest` values in `wsb_model_dataset.csv` were 0, meaning prior daily model results also ran without Trends signal. Fixed in `src/altfore/pipeline/wsb_dataset.py` by expanding to the union index before forward-filling. The daily model results in the Results section above should be re-run against the corrected dataset.
+
 ---
 
 ## Known Limitations and Next Steps
@@ -254,7 +304,9 @@ python scripts/train_period_model.py     # → dataset/weekly_model_comparison.c
 | Sentiment polarity | Only mention counts, no tone scoring |
 | Google Trends granularity | Weekly only for multi-year windows; daily data requires overlapping ~90-day chunks and normalisation stitching |
 | Statistical significance | Best t-stat is 1.03 (2025) — directionally consistent but not significant at p < 0.05 |
-| Weekly horizon | Implemented — see Weekly Horizon Extension section above |
+| Weekly horizon | Implemented and evaluated — did not outperform daily; see Weekly Horizon Extension section |
+| Trends merge bug | Fixed — prior daily results used zeroed Trends features; daily model should be re-run against corrected dataset |
+| Daily model re-evaluation | Pending — daily Results section reflects pre-fix run; re-run `train_model.py` to get accurate trends-inclusive numbers |
 
 ---
 

@@ -76,7 +76,13 @@ def load_google_trends(trends_path: Path, all_dates: pd.DatetimeIndex) -> pd.Dat
     filled_frames: list[pd.DataFrame] = []
     for ticker, grp in df.groupby("ticker"):
         grp = grp.set_index("date")[["trends_interest"]].sort_index()
-        grp = grp.reindex(all_dates).ffill()
+        # Trends observations fall on Sundays; all_dates are Mon-Fri trading days.
+        # Reindexing directly to all_dates would silently drop all Sunday values
+        # before ffill runs, leaving an all-NaN series. Instead: expand to the union
+        # so the Sunday anchors are present, forward-fill across the full range, then
+        # select only the trading dates.
+        combined = grp.index.union(all_dates)
+        grp = grp.reindex(combined).ffill().reindex(all_dates)
         grp["ticker"] = ticker
         grp = grp.reset_index().rename(columns={"index": "date"})
         filled_frames.append(grp)
