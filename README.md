@@ -115,80 +115,87 @@ Val split is used only for early stopping (LightGBM) — not for model selection
 
 ## Results
 
+> **Note:** Results below reflect the corrected dataset after fixing a Trends merge bug
+> (see Known Limitations). Prior runs had `trends_interest = 0` for all rows; these numbers
+> use the live Google Trends signal.
+
 ### Model comparison — test AUC (20-ticker universe, 14 features)
 
 | Model | 2024 (raw) | 2025 (raw) | Mean |
 |-------|-----------|-----------|------|
-| Extra Trees | 0.498 | **0.511** | **0.504** |
-| LightGBM | 0.498 | 0.509 | 0.504 |
-| Random Forest | 0.491 | 0.511 | 0.501 |
+| LightGBM | 0.485 | **0.517** | 0.501 |
 | Dummy baseline | 0.500 | 0.500 | 0.500 |
-| Logistic L1 | 0.497 | 0.498 | 0.498 |
+| Logistic L1 | 0.489 | 0.504 | 0.497 |
+| Random Forest (calibrated) | **0.518** | 0.510 | **0.514** |
 
-AUC is largely unchanged from the 10-feature baseline — consistent with the view that
-directional accuracy near the efficient market boundary is hard to move. The portfolio-level
-improvement (below) comes from better ranking, not higher raw accuracy.
+Most raw AUC values fall below 0.500 in 2024, reflecting that the model learned the wrong
+direction for that test year (see portfolio results). Random Forest calibrated is the most
+consistent ranker at AUC ~0.514 mean.
 
-### Feature importance (LightGBM, 2022–2023 → 2025 window)
-`return_1d` dominates. All five mention features register non-zero importance after
-within-ticker normalisation. Among the four new trends features, `trends_abnormal` and
-`trends_mentions_divergence` score comparably to the mention momentum features;
-`trends_log` and `trends_chg_5d` carry lower but non-zero weight.
+### Feature importance (LightGBM, 2022–2023 → 2025 window, corrected)
+
+`return_1d` dominates (11 splits). With live Trends data, `trends_abnormal` is the
+third-ranked feature (7 splits), ahead of `momentum_5d` and all mention features —
+confirming the Trends signal carries genuine information once correctly merged.
+`mentions_abnormal` and `mentions_volume_scaled` receive zero importance in this window.
+In the shorter 2022-only training window, `trends_mentions_divergence` ranks first (5 splits),
+suggesting the divergence signal is most useful when the model is underfit on price history.
 
 ### Probability calibration (LightGBM)
 
 Raw predictions cluster in a narrow band — the model can rank but produces no actionable
-confidence scores. Platt scaling (sigmoid calibration fitted on the val split via
-`CalibratedClassifierCV(FrozenEstimator(...))`) corrects this.
+confidence scores. Platt scaling corrects this, though the calibrated spread remains tight.
 
 | Metric | Raw (2024) | Calibrated (2024) | Raw (2025) | Calibrated (2025) |
 |--------|-----------|------------------|-----------|------------------|
 | Mean predicted prob | 0.467 | 0.529 | 0.500 | 0.513 |
-| Std predicted prob | 0.004 | 0.005 | 0.008 | 0.011 |
-| ECE | 0.046 | 0.016 | 0.011 | 0.007 |
+| Std predicted prob | 0.004 | 0.007 | 0.005 | 0.007 |
+| ECE | 0.046 | 0.016 | 0.011 | 0.003 |
 | Brier score | 0.252 | 0.250 | 0.250 | 0.250 |
-| % predictions > 0.55 | 0% | 0% | 0% | 0% |
+| % predictions > 0.55 | 0% | 0.2% | 0% | 0.1% |
 
-Calibration spread is narrower with the expanded feature set — the model no longer
-produces predictions above 0.55. Ranking quality improved (see portfolio metrics below)
-but high-confidence point predictions are no longer available.
+ECE improves substantially with calibration. Spread remains narrow — almost no predictions
+exceed 0.55. Ranking quality differs sharply by year (see below).
 
-### Signal quality (LightGBM calibrated, test 2025)
-| Metric | Value |
-|--------|-------|
-| Spearman IC | 0.016 (p=0.25) |
-| Monthly IC mean | +0.014 |
-| Months IC positive | 58% |
-| Q5-Q1 return spread | +16.8 bps/day |
+### Signal quality (LightGBM calibrated)
 
-Monthly IC is more evenly distributed across H2 2025 compared to the prior setup
-(which was concentrated in Dec 2025 alone).
+| Metric | 2024 | 2025 |
+|--------|------|------|
+| Spearman IC (raw) | −0.026 | **+0.031** |
+| Monthly IC mean | −0.025 | **+0.027** |
+| Months IC positive | 41% | **83%** |
+| Q5-Q1 return spread | −15.3 bps/day | **+40.2 bps/day** |
+
+2025 shows a strong, consistent signal — positive IC in 10 of 12 months with no obvious
+seasonal clustering. 2024 is the mirror image: mostly negative IC, negative Q5-Q1 spread.
+The divergence between years is the central unresolved finding.
 
 ### Long-short portfolio (LightGBM calibrated, top-2 / bottom-2 daily)
 
 | Year | Ann. Return | Sharpe | Max Drawdown | Win Rate | t-stat |
 |------|-------------|--------|--------------|----------|--------|
-| 2024 | **+38%** | **+0.976** | −36% | 52.0% | 0.98 |
-| 2025 | **+49%** | **+1.034** | −30% | 53.2% | 1.03 |
+| 2024 | **−93%** | **−1.405** | −74% | 44.0% | −1.41 |
+| 2025 | **+70%** | **+1.490** | −29% | 54.8% | +1.48 |
 
-This is a material improvement over the 10-feature baseline (2024: −48% / Sharpe −0.63;
-2025: +30% / Sharpe +0.66). 2024 flipped from deeply negative to solidly positive.
-Both years now have Sharpe near 1.0 and t-statistics approaching 1.0. Neither clears
-conventional statistical significance (t > 2), but both years now point in the same
-direction — an important consistency check.
+The two test years are opposite in sign. The 2025 result is the strongest single-year
+portfolio result in the project so far (t-stat 1.48, just below the 2.0 threshold for
+p < 0.05). The 2024 collapse is equally extreme in the negative direction. This magnitude
+of year-to-year inconsistency suggests the model is fitting to regime-specific structure
+in the training data rather than a stable cross-sectional signal.
 
-### Conditional IC (LightGBM calibrated, test 2025)
-| Condition | IC | p |
-|-----------|-----|---|
-| High abnormal mentions | +0.032 | 0.109 |
-| Low abnormal mentions | −0.000 | 0.989 |
-| High volatility | +0.026 | 0.195 |
-| Low volatility | −0.007 | 0.721 |
+### Conditional IC (LightGBM calibrated)
 
-The signal concentration in high-mention and high-volatility regimes persists and is
-slightly stronger than the pre-trends baseline, consistent with attention-driven price
-discovery. Flat-to-negative IC in low-mention / low-volatility regimes confirms the
-model has no edge in quiet periods.
+| Condition | 2024 IC | 2024 p | 2025 IC | 2025 p |
+|-----------|---------|--------|---------|--------|
+| High abnormal mentions | −0.030 | 0.131 | +0.025 | 0.207 |
+| Low abnormal mentions | −0.022 | 0.274 | +0.036 | 0.069 |
+| High volatility | −0.008 | 0.685 | +0.037 | 0.067 |
+| Low volatility | −0.037 | 0.066 | +0.015 | 0.469 |
+
+Unlike the zeroed-trends run, no consistent regime filter emerges. In 2025, IC is
+broadly positive across all conditions — the signal is not concentrated in high-mention
+or high-volatility periods. In 2024, all conditions are negative. The mention-regime
+interpretation from the prior run was an artifact of the zeroed Trends data.
 
 ---
 
@@ -200,11 +207,15 @@ Several empirical patterns emerged from the daily-horizon experiments:
 
 **Portfolio edge exists through cross-sectional ranking, not point prediction.** The model cannot reliably say "TSLA goes up tomorrow," but it ranks stocks by relative conviction well enough that a top-2 long / bottom-2 short strategy achieves Sharpe ~1.0 across both test years. The edge is in ordering, not direction.
 
-**Reddit + Trends act as a regime filter, not a directional signal.** Cross-sectional IC is +0.032 when mentions are abnormally high, near zero in quiet periods. The combined signals identify *when* attention-driven price discovery may be active; they do not resolve which direction the price moves unconditionally.
+**Reddit + Trends as a regime filter — not confirmed after correction.** An earlier (buggy) run with zeroed Trends showed IC concentrated in high-mention periods (+0.032 vs ~0 in quiet periods). With correct Trends data, IC in 2025 is broadly positive across all regimes; in 2024 it is broadly negative across all regimes. The regime-filter interpretation was an artifact of the data error, not a real signal.
 
-**The overnight attention-to-price mechanism is weak.** Expecting a stock to rise or fall the next day based on yesterday's mention count imposes an extremely tight reaction window. A more defensible hypothesis: sustained attention over a week or more accumulates and persists, giving price action time to respond. This motivates the weekly extension below.
+**The 2024 vs. 2025 divergence is the key open question.** The corrected daily model produces Sharpe −1.41 in 2024 and +1.49 in 2025 — opposite signs. Both are trained on the same features with the same architecture, differing only in training window length (2022 alone vs. 2022–2023). The most likely explanation is that the model learns regime-specific structure (2022 was a bear year; adding 2023 bull data may change what patterns it latches on to), but this has not been verified.
 
-**Google Trends is structurally weekly.** Weekly Trends values are forward-filled to daily in the current model — a fundamental granularity mismatch. A weekly forecasting horizon aligns the signal with its native resolution and eliminates the forward-fill approximation.
+**Google Trends features carry real signal.** With the merge bug fixed, `trends_abnormal` is the third-ranked feature in LightGBM (behind only `return_1d` and `volatility_20d`). The Trends signal is not decorative — it materially affects which stocks the model ranks, and therefore which years it profits or loses.
+
+**The overnight attention-to-price mechanism is weak.** Expecting a stock to rise or fall the next day based on yesterday's mention count imposes an extremely tight reaction window. The weekly extension tested whether sustained multi-day attention is more predictive — it was not confirmed (see Weekly Horizon Extension below).
+
+**Google Trends is structurally weekly.** Weekly Trends values are forward-filled to daily — a granularity mismatch that motivated the weekly extension. After fixing the merge bug, this is less of a concern: the forward-fill correctly propagates Sunday values across the trading week, and `trends_abnormal` is the top Trends feature.
 
 ---
 
@@ -305,8 +316,8 @@ The regime filter that works on the daily model (IC concentrates in high-mention
 | Google Trends granularity | Weekly only for multi-year windows; daily data requires overlapping ~90-day chunks and normalisation stitching |
 | Statistical significance | Best t-stat is 1.03 (2025) — directionally consistent but not significant at p < 0.05 |
 | Weekly horizon | Implemented and evaluated — did not outperform daily; see Weekly Horizon Extension section |
-| Trends merge bug | Fixed — prior daily results used zeroed Trends features; daily model should be re-run against corrected dataset |
-| Daily model re-evaluation | Pending — daily Results section reflects pre-fix run; re-run `train_model.py` to get accurate trends-inclusive numbers |
+| Trends merge bug | Fixed — `load_google_trends` now expands to union index before ffill; daily Results section updated with corrected numbers |
+| 2024 vs. 2025 divergence | Open — corrected model yields Sharpe −1.41 (2024) vs +1.49 (2025); likely regime-dependent training but undiagnosed |
 
 ---
 
