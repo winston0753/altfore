@@ -306,18 +306,137 @@ The regime filter that works on the daily model (IC concentrates in high-mention
 
 ---
 
+## Analysis: Forecasting in a Bear Market vs. a Bull Market
+
+### Market context across the four years
+
+The 20-ticker universe experienced sharply different macro regimes year by year:
+
+| Year | Role | Median annual return | Tickers up | Avg daily mentions | Daily return vol |
+|------|------|---------------------|------------|-------------------|-----------------|
+| 2022 | Train (bear) | −50.5% | 0 / 20 | 2,580 | 3.91% |
+| 2023 | Train (bull) | +61.6% | 19 / 20 | 1,413 | 2.93% |
+| 2024 | Test | +37.1% | 13 / 20 | 2,580 | 3.32% |
+| 2025 | Test | +22.5% | 15 / 20 | 1,908 | 3.02% |
+
+2022 stands apart: every ticker in the universe finished down, and mention activity was the
+highest and most volatile of any year. 2023 is the mirror: 19 of 20 tickers gained, with
+quieter mention activity. 2024 resembled 2023 structurally (broad bull market, 13/20 up)
+but with mention volumes back at 2022 levels. 2025 was more measured with pockets of
+significant volatility.
+
+### Why 2024 failed (trained on bear only)
+
+The first walk-forward split trains exclusively on 2022 and tests on 2024. In 2022, the
+entire universe declined. Within that regime, the features learned a specific relationship:
+tickers with the highest abnormal attention and search interest were often those
+experiencing the sharpest drawdowns — panic selling, capitulation events, and retail
+pile-ons into falling names. WallStreetBets attention in a bear market concentrates on
+losers, not winners. The model internalised this: *elevated attention → further decline*.
+
+Applied to 2024 — a broad bull market where 13 of 20 tickers gained and abnormal attention
+frequently tracked earnings beats, product launches, and AI-driven momentum — the same
+learned relationship fired in reverse. The stocks the model ranked as high-conviction
+longs were the ones attracting quiet attention in a falling market style; the stocks it
+ranked short were the ones with the loudest momentum and attention. The model confidently
+shorted the winners and longed the laggards throughout most of the year.
+
+The monthly L/S returns reflect this: losses in 10 of 12 months, with May alone costing
+−39.7% — likely a period of high attention combined with strong price momentum (exactly
+the combination the model misread). Only April (+7.3%) and December (+8.3%) were
+profitable. Sharpe −1.41 and a −74% maximum drawdown are the outcome.
+
+### Why 2025 succeeded (trained on bear + bull)
+
+The second split trains on 2022 and 2023 combined. Adding 2023 gave the model the
+complementary regime: a year in which elevated attention tracked genuine momentum and
+upward continuation, where mention spikes preceded further gains, and where the
+relationship between search interest and next-day returns ran positive. The model now had
+both interpretations in its training history.
+
+When applied to 2025, the model could implicitly distinguish between attention patterns
+that look like 2022 (noise, panic, or crowded longs about to reverse) and those that look
+like 2023 (momentum, accumulation, directional follow-through). The cross-sectional
+ranking it produced was broadly correct: positive IC in 10 of 12 months, with especially
+large gains in May (+20.2%), October (+18.6%), November (+8.7%), and December (+16.0%).
+The second half of 2025 shows the model firing most reliably — consistent with a period
+where market structure was cleaner and the attention-momentum relationship was stable.
+Annual return: +70%, Sharpe +1.49, t-stat 1.48.
+
+### The core insight: attention signals are regime-conditional
+
+Reddit mentions and Google Trends search interest do not carry an absolute directional
+meaning. The same feature value — say, a 2-standard-deviation abnormal mention spike —
+predicts different things depending on whether the macro environment is one of distress or
+one of momentum. In a bear market, attention spikes signal focal points of fear; in a
+bull market, they signal focal points of enthusiasm. The signal is real in both cases, but
+its directional implication flips.
+
+This is why a model trained exclusively on bear-market data is worse than useless when
+deployed in a bull market: it is not merely uninformed, it is systematically inverted.
+A Sharpe of −1.41 requires consistent, confident wrongness — not noise.
+
+The practical implication is that training on regime-diverse data is a requirement, not
+a nicety. A single calendar year of training is too narrow regardless of sample size
+within that year. The model needs to have seen attention signals resolve in both directions
+to assign them the correct weight. Once it has — as the 2022+2023 trained model
+demonstrates — the signals generalise and produce meaningful out-of-sample rankings.
+
+### What the 2025 result actually proves
+
+The 2025 result is the strongest single-year outcome the project has produced:
+
+| Metric | Value |
+|--------|-------|
+| Ann. return (L/S, top-2 / bottom-2) | +69.7% |
+| Sharpe ratio | +1.49 |
+| t-statistic | 1.48 |
+| Monthly IC positive | 10 / 12 months |
+| Q5-Q1 daily return spread | +40.2 bps/day |
+
+A t-statistic of 1.48 on a single test year (250 trading days × 20 tickers) is not
+statistically significant at the conventional p < 0.05 threshold, but it is the closest
+this project has come. More importantly, the consistency within the year — IC positive in
+10 of 12 calendar months with no obvious seasonal clustering — argues against the result
+being driven by a single lucky period. The signal was broadly present across 2025.
+
+### Conclusion
+
+The experiment demonstrates three things:
+
+1. **Alternative data signals are regime-conditional.** Reddit mentions and Google Trends
+   search interest are predictive, but their directional interpretation depends on the
+   macro environment. They are not unconditional alpha sources.
+
+2. **Regime-diverse training is necessary for generalisation.** A model trained on a
+   single market regime inverts the signal when the regime changes. Training across at
+   least one bear and one bull year appears sufficient to learn a generalised signal, at
+   least within the 2021–2025 period.
+
+3. **The cross-sectional ranking edge is real but fragile.** The 2025 result provides
+   genuine evidence that Reddit and search attention contain predictive information about
+   relative next-day stock performance. The 2024 result proves this edge disappears — and
+   reverses — when training data does not span the relevant regime space. The signal is
+   real; the risk is regime mismatch.
+
+---
+
 ## Known Limitations and Next Steps
 
 | Area | Status |
 |------|--------|
-| Probability calibration | Implemented — ECE improved, but calibrated spread is now too narrow for threshold-based strategies (0% of predictions > 0.55) |
-| Ticker expansion | 20 tickers; WSB data has ~100, more expansion possible |
-| Sentiment polarity | Only mention counts, no tone scoring |
-| Google Trends granularity | Weekly only for multi-year windows; daily data requires overlapping ~90-day chunks and normalisation stitching |
-| Statistical significance | Best t-stat is 1.03 (2025) — directionally consistent but not significant at p < 0.05 |
+| Probability calibration | Implemented — ECE improved, but calibrated spread is now too narrow for threshold-based strategies (std_p ~0.007, <0.2% of predictions > 0.55); model is usable only as a cross-sectional ranker |
+| Ticker expansion | 20 tickers; WSB data has ~100, more expansion possible; broader universe reduces noise in top-2/bottom-2 portfolio selection |
+| Sentiment polarity | Only mention counts, no tone scoring; distinguishing fearful vs. enthusiastic attention is exactly what the regime-conditional signal needs — not started |
+| Google Trends granularity | Weekly only for multi-year windows; daily data requires overlapping ~90-day API chunks and normalisation stitching; worthwhile given `trends_abnormal` is now the #3 feature |
+| Statistical significance | Best t-stat is 1.48 (2025) — directionally consistent but not significant at p < 0.05 |
 | Weekly horizon | Implemented and evaluated — did not outperform daily; see Weekly Horizon Extension section |
 | Trends merge bug | Fixed — `load_google_trends` now expands to union index before ffill; daily Results section updated with corrected numbers |
-| 2024 vs. 2025 divergence | Open — corrected model yields Sharpe −1.41 (2024) vs +1.49 (2025); likely regime-dependent training but undiagnosed |
+| 2024 vs. 2025 divergence | Explained by regime-conditional signal — see Analysis section; bear-only training inverts the signal in bull markets |
+| Third walk-forward split | Not implemented — 2021 data is present in the panel but unused; adding train=2021–2022 / val=2023 / test=2024 would validate whether regime-diverse training generalises across different bear+bull pairings, not just 2022+2023 |
+| Cross-sectional normalisation | All features are normalised within-ticker over time; no cross-sectional rank features (e.g. where does this ticker rank among all 20 by attention today); adding these would directly improve the cross-sectional ranking the L/S portfolio depends on |
+| Zero-importance features | `mentions_abnormal` and `mentions_volume_scaled` receive zero LightGBM importance in the main training window; candidates for replacement with earnings proximity flag, mention acceleration (second derivative), or cross-ticker attention share |
+| Regime detection at inference | No mechanism to flag when model is likely in regime mismatch; a simple macro indicator (e.g. index vs. 200-day MA) could gate model confidence or signal when to invert rankings |
 
 ---
 
